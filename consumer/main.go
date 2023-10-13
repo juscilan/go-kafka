@@ -2,85 +2,60 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
-	"sync"
 
 	"github.com/Shopify/sarama"
 )
 
 func main() {
-	// Define Kafka broker addresses and the topic to consume
-	brokerList := []string{"localhost:9092"} // Change this if your Kafka broker is running on a different address
-	topic := "your-topic"                    // Change this to the Kafka topic you want to consume from
-	groupID := "my-consumer-group"           // Specify your consumer group
-
-	// Create a new Kafka consumer
+	// Set up configuration
 	config := sarama.NewConfig()
-	config.Consumer.Offsets.Initial = sarama.OffsetOldest
+	config.Consumer.Return.Errors = true
 
-	consumer, err := sarama.NewConsumer(brokerList, config)
+	// Specify the Kafka broker address
+	brokers := []string{"localhost:9091"}
+
+	// Create a new consumer
+	consumer, err := sarama.NewConsumer(brokers, config)
 	if err != nil {
-		log.Fatalf("Error creating Kafka consumer: %v", err)
+		panic(err)
 	}
 	defer func() {
 		if err := consumer.Close(); err != nil {
-			log.Fatalf("Error closing Kafka consumer: %v", err)
+			panic(err)
 		}
 	}()
 
-	// Create a Kafka consumer group
-	consumerGroup, err := sarama.NewConsumerGroup(brokerList, groupID, config)
+	// Specify the topic you want to consume messages from
+	topic := "moreto"
+
+	// Create a new partition consumer
+	partitionConsumer, err := consumer.ConsumePartition(topic, 0, sarama.OffsetNewest)
 	if err != nil {
-		log.Fatalf("Error creating Kafka consumer group: %v", err)
+		panic(err)
 	}
 	defer func() {
-		if err := consumerGroup.Close(); err != nil {
-			log.Fatalf("Error closing Kafka consumer group: %v", err)
+		if err := partitionConsumer.Close(); err != nil {
+			panic(err)
 		}
 	}()
 
-	// Create a channel to receive messages
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt)
+	// Create a signal channel to handle graceful shutdown
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt)
 
-	// Consume messages from the topic
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-
-	go func() {
-		defer wg.Done()
-
-		for {
-			select {
-			case <-signals:
-				return
-			default:
-				handler := MyMessageHandler{} // Replace with your custom message handler
-				err := consumerGroup.Consume(handler, []string{topic})
-				if err != nil {
-					log.Printf("Error consuming from Kafka: %v", err)
-				}
-			}
+	// Start consuming messages
+	for {
+		select {
+		case msg := <-partitionConsumer.Messages():
+			fmt.Printf("Received message: %s\n", string(msg.Value))
+		case err := <-partitionConsumer.Errors():
+			fmt.Printf("Error: %v\n", err.Err)
+		case <-signalChan:
+			// Handle shutdown (e.g., close connections and clean up)
+			fmt.Println("Shutting down...")
+			return
 		}
-	}()
-
-	wg.Wait()
-}
-
-// MyMessageHandler is a custom message handler that processes Kafka messages.
-type MyMessageHandler struct{}
-
-func (h MyMessageHandler) Setup(sarama.ConsumerGroupSession) error   { return nil }
-func (h MyMessageHandler) Cleanup(sarama.ConsumerGroupSession) error { return nil }
-
-func (h MyMessageHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-	for message := range claim.Messages() {
-		fmt.Printf("Message received: Topic: %s, Partition: %d, Offset: %d, Key: %s, Value: %s\n",
-			message.Topic, message.Partition, message.Offset, message.Key, message.Value)
-		session.MarkMessage(message, "")
 	}
-
-	return nil
 }
